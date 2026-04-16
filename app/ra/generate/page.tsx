@@ -10,8 +10,6 @@ import { CompanySelector } from '@/components/generate/company-selector';
 import { PromptInput } from '@/components/generate/prompt-input';
 import { ProgressTracker } from '@/components/generate/progress-tracker';
 import { FileUploadZone } from '@/components/upload/file-upload-zone';
-import { DocList } from '@/components/upload/doc-list';
-import { DocRankList } from '@/components/upload/doc-rank-list';
 import { useUpload } from '@/lib/hooks/use-upload';
 import { useGenerate } from '@/lib/hooks/use-generate';
 import { Button } from '@/components/ui/button';
@@ -25,7 +23,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
 import { REPORT_SECTIONS } from '@/lib/constants';
 import { SparklesIcon, BuildingIcon } from 'lucide-react';
 
@@ -35,13 +32,13 @@ export default function RAGeneratePage() {
   const [subsidiary, setSubsidiary] = useState('');
   const [section, setSection] = useState('');
   const [prompt, setPrompt] = useState('');
-  const { documents, addFiles, removeDocument, toggleHierarchy, reorderDocuments } = useUpload();
+  const { presentations, addPresentations, removeFile, totalFiles } = useUpload();
   const { status, progress, message, isGenerating, jobId, startGeneration } = useGenerate();
 
-  const canGenerate = company && section && documents.length > 0 && !isGenerating;
+  const canGenerate = company && section && totalFiles > 0 && !isGenerating;
 
   const handleGenerate = () => {
-    startGeneration();
+    startGeneration(company, subsidiary, section);
   };
 
   const handleViewReport = () => {
@@ -82,28 +79,25 @@ export default function RAGeneratePage() {
         </CardContent>
       </Card>
 
-      {/* Step 2 — Upload & Rank Documents */}
+      {/* Step 2 — Upload Documents */}
       <Card className="border-border/50">
         <CardHeader className="pb-4">
           <CardTitle className="text-base font-semibold flex items-center gap-2">
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">2</span>
-            Upload & Rank Documents
+            Upload Documents
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <FileUploadZone onFilesSelected={addFiles} disabled={isGenerating} />
-          <DocList documents={documents} onRemove={removeDocument} onToggleHierarchy={toggleHierarchy} />
-          {documents.length > 1 && (
-            <>
-              <Separator />
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Document Ranking</p>
-                <p className="text-xs text-muted-foreground">
-                  Drag to reorder — ranking is passed as weighted context to the agent.
-                </p>
-                <DocRankList documents={documents} onReorder={reorderDocuments} />
-              </div>
-            </>
+          <FileUploadZone onFilesSelected={addPresentations} disabled={isGenerating} />
+          {presentations.length > 0 && (
+            <div className="space-y-1.5">
+              {presentations.map((f) => (
+                <div key={f.id} className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2 text-sm">
+                  <span className="truncate max-w-[280px]">{f.name}</span>
+                  <button onClick={() => removeFile(f.id)} className="text-muted-foreground hover:text-destructive text-xs">Remove</button>
+                </div>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>

@@ -1,19 +1,29 @@
 'use client';
 
 // components/upload/file-upload-zone.tsx
-// File upload zone for PDF, XLSX, DOCX
+// Reusable file upload zone — supports per-category labels and accepted file types
 
 import { useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { SUPPORTED_FILE_EXTENSIONS } from '@/lib/constants';
 import { UploadCloudIcon, FileIcon } from 'lucide-react';
 
 interface FileUploadZoneProps {
   onFilesSelected: (files: FileList | File[]) => void;
   disabled?: boolean;
+  label?: string;
+  description?: string;
+  accept?: string;
+  id?: string;
 }
 
-export function FileUploadZone({ onFilesSelected, disabled = false }: FileUploadZoneProps) {
+export function FileUploadZone({
+  onFilesSelected,
+  disabled = false,
+  label = 'Drop files here or click to browse',
+  description = 'Supports PDF, XLSX, DOCX',
+  accept = '.pdf,.xlsx,.docx',
+  id = 'file-upload-zone',
+}: FileUploadZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleDrop = useCallback(
@@ -47,13 +57,13 @@ export function FileUploadZone({ onFilesSelected, disabled = false }: FileUpload
 
   return (
     <div
-      id="file-upload-zone"
+      id={id}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onClick={handleClick}
       className={`
-        relative flex flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed
-        p-10 text-center transition-all duration-200 cursor-pointer
+        relative flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed
+        p-6 text-center transition-all duration-200 cursor-pointer
         ${disabled
           ? 'border-muted bg-muted/30 cursor-not-allowed opacity-60'
           : 'border-border/60 hover:border-primary/40 hover:bg-muted/30 bg-muted/10'
@@ -64,23 +74,19 @@ export function FileUploadZone({ onFilesSelected, disabled = false }: FileUpload
         ref={inputRef}
         type="file"
         multiple
-        accept={SUPPORTED_FILE_EXTENSIONS.join(',')}
+        accept={accept}
         onChange={handleChange}
         className="hidden"
-        id="file-upload-input"
+        id={`${id}-input`}
       />
 
-      <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-primary/10">
-        <UploadCloudIcon className="h-7 w-7 text-primary" />
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+        <UploadCloudIcon className="h-6 w-6 text-primary" />
       </div>
 
       <div>
-        <p className="text-sm font-medium">
-          Drop files here or click to browse
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Supports PDF, XLSX, DOCX
-        </p>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
       </div>
 
       <Button variant="outline" size="sm" disabled={disabled} type="button">

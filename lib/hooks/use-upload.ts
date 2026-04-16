@@ -1,69 +1,121 @@
 'use client';
 
 // lib/hooks/use-upload.ts
+// Manages three separate file categories and handles real upload to POST /upload
+
 import { useState, useCallback } from 'react';
-import type { UploadedDoc, DocHierarchy } from '@/lib/types/upload';
+import { pcService } from '@/lib/api/pc-service';
+
+export interface UploadedFile {
+  id: string;
+  file: File;
+  name: string;
+  size: number;
+}
 
 export function useUpload() {
-  const [documents, setDocuments] = useState<UploadedDoc[]>([]);
+  const [presentations, setPresentations] = useState<UploadedFile[]>([]);
+  const [financials, setFinancials] = useState<UploadedFile[]>([]);
+  const [otherDocs, setOtherDocs] = useState<UploadedFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
 
-  const addFiles = useCallback((files: FileList | File[]) => {
-    const newDocs: UploadedDoc[] = Array.from(files).map((file, index) => ({
-      id: `doc-${Date.now()}-${index}`,
+  const addPresentations = useCallback((files: FileList | File[]) => {
+    const newFiles: UploadedFile[] = Array.from(files).map((file, i) => ({
+      id: `pres-${Date.now()}-${i}`,
       file,
       name: file.name,
       size: file.size,
-      type: file.type,
-      hierarchy: 'primary' as DocHierarchy,
-      rank: documents.length + index + 1,
     }));
-
-    setDocuments((prev) => [...prev, ...newDocs]);
-  }, [documents.length]);
-
-  const removeDocument = useCallback((id: string) => {
-    setDocuments((prev) => {
-      const filtered = prev.filter((d) => d.id !== id);
-      return filtered.map((d, i) => ({ ...d, rank: i + 1 }));
-    });
+    setPresentations((prev) => [...prev, ...newFiles]);
+    setUploadSuccess(false);
+    setUploadError(null);
   }, []);
 
-  const toggleHierarchy = useCallback((id: string) => {
-    setDocuments((prev) =>
-      prev.map((d) =>
-        d.id === id
-          ? { ...d, hierarchy: d.hierarchy === 'primary' ? 'secondary' : 'primary' }
-          : d
-      )
-    );
+  const addFinancials = useCallback((files: FileList | File[]) => {
+    const newFiles: UploadedFile[] = Array.from(files).map((file, i) => ({
+      id: `fin-${Date.now()}-${i}`,
+      file,
+      name: file.name,
+      size: file.size,
+    }));
+    setFinancials((prev) => [...prev, ...newFiles]);
+    setUploadSuccess(false);
+    setUploadError(null);
   }, []);
 
-  const reorderDocuments = useCallback((reordered: UploadedDoc[]) => {
-    setDocuments(reordered.map((d, i) => ({ ...d, rank: i + 1 })));
+  const addOtherDocs = useCallback((files: FileList | File[]) => {
+    const newFiles: UploadedFile[] = Array.from(files).map((file, i) => ({
+      id: `other-${Date.now()}-${i}`,
+      file,
+      name: file.name,
+      size: file.size,
+    }));
+    setOtherDocs((prev) => [...prev, ...newFiles]);
+    setUploadSuccess(false);
+    setUploadError(null);
   }, []);
 
-  const uploadDocuments = useCallback(async (_companyName: string) => {
+  const removeFile = useCallback((id: string) => {
+    setPresentations((prev) => prev.filter((f) => f.id !== id));
+    setFinancials((prev) => prev.filter((f) => f.id !== id));
+    setOtherDocs((prev) => prev.filter((f) => f.id !== id));
+  }, []);
+
+  // Real upload — sends three file categories to POST /upload
+  const uploadDocuments = useCallback(async (companyName: string) => {
     setIsUploading(true);
+    setUploadError(null);
+    setUploadSuccess(false);
+
     try {
-      // TODO: Call API service when backend is ready
+      if (presentations.length === 0) {
+        throw new Error('At least one PDF is required (Investor Presentations).');
+      }
+      if (financials.length === 0) {
+        throw new Error('At least one Excel file is required (Financial Models).');
+      }
+
+      await pcService.uploadDocuments(
+        companyName,
+        presentations.map((f) => f.file),
+        financials.map((f) => f.file),
+        otherDocs.length > 0 ? otherDocs.map((f) => f.file) : undefined,
+      );
+
+      setUploadSuccess(true);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+      throw err;
     } finally {
       setIsUploading(false);
     }
+  }, [presentations, financials, otherDocs]);
+
+  const clearAll = useCallback(() => {
+    setPresentations([]);
+    setFinancials([]);
+    setOtherDocs([]);
+    setUploadSuccess(false);
+    setUploadError(null);
   }, []);
 
-  const clearDocuments = useCallback(() => {
-    setDocuments([]);
-  }, []);
+  const totalFiles = presentations.length + financials.length + otherDocs.length;
 
   return {
-    documents,
+    presentations,
+    financials,
+    otherDocs,
+    totalFiles,
     isUploading,
-    addFiles,
-    removeDocument,
-    toggleHierarchy,
-    reorderDocuments,
+    uploadError,
+    uploadSuccess,
+    addPresentations,
+    addFinancials,
+    addOtherDocs,
+    removeFile,
     uploadDocuments,
-    clearDocuments,
+    clearAll,
   };
 }

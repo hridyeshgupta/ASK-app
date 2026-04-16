@@ -18,6 +18,8 @@ export const POLL_INTERVAL_MS = 3000;
 
 // Report sections available for generation
 export const REPORT_SECTIONS = [
+  'Company Overview',
+  'Subsidiary Deep Dive',
   'Executive Summary',
   'Market Overview',
   'Financial Analysis',
