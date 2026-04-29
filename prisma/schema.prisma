@@ -1,0 +1,161 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["pc", "public", "ra"]
+}
+
+model pc_companies {
+  id              String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String               @unique @db.VarChar(255)
+  created_by      String?              @db.VarChar(255)
+  created_at      DateTime             @default(now()) @db.Timestamptz(6)
+  generation_jobs pc_generation_jobs[]
+  output_files    pc_output_files[]
+  upload_jobs     pc_upload_jobs[]
+
+  @@map("companies")
+  @@schema("pc")
+}
+
+model pc_generation_jobs {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id      String            @db.Uuid
+  section_name    String            @db.VarChar(255)
+  subsidiary_name String?           @db.VarChar(255)
+  status          String            @default("pending") @db.VarChar(30)
+  progress        Int               @default(0)
+  output_url      String?
+  backend_job_id  String?           @db.VarChar(255)
+  created_by      String?           @db.VarChar(255)
+  started_at      DateTime          @default(now()) @db.Timestamptz(6)
+  completed_at    DateTime?         @db.Timestamptz(6)
+  error_message   String?
+  companies       pc_companies      @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  output_files    pc_output_files[]
+
+  @@index([company_id, started_at(sort: Desc)], map: "idx_pc_gen_jobs_company")
+  @@map("generation_jobs")
+  @@schema("pc")
+}
+
+model pc_output_files {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id          String              @db.Uuid
+  generation_job_id   String?             @db.Uuid
+  file_type           String              @db.VarChar(50)
+  section_name        String?             @db.VarChar(255)
+  file_name           String              @db.VarChar(500)
+  gcs_path            String
+  gcs_references_path String?
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  companies           pc_companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  generation_jobs     pc_generation_jobs? @relation(fields: [generation_job_id], references: [id], onUpdate: NoAction)
+
+  @@index([company_id, created_at(sort: Desc)], map: "idx_pc_output_files_company")
+  @@index([generation_job_id], map: "idx_pc_output_files_job")
+  @@map("output_files")
+  @@schema("pc")
+}
+
+model pc_upload_jobs {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id      String       @db.Uuid
+  status          String       @default("uploading") @db.VarChar(30)
+  progress        Int          @default(0)
+  file_names      Json         @default("[]")
+  file_categories Json?        @default("{}")
+  uploaded_by     String?      @db.VarChar(255)
+  started_at      DateTime     @default(now()) @db.Timestamptz(6)
+  completed_at    DateTime?    @db.Timestamptz(6)
+  error_message   String?
+  gcs_paths       Json?        @default("{}")
+  companies       pc_companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id, started_at(sort: Desc)], map: "idx_pc_upload_jobs_company")
+  @@map("upload_jobs")
+  @@schema("pc")
+}
+
+model user_profiles {
+  firebase_uid String   @id @db.VarChar(255)
+  display_name String?  @db.VarChar(255)
+  email        String?  @db.VarChar(255)
+  role         String   @default("member") @db.VarChar(30)
+  modules      Json     @default("[\"pc\"]")
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("public")
+}
+
+model ra_companies {
+  id              String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String               @unique @db.VarChar(255)
+  created_by      String?              @db.VarChar(255)
+  created_at      DateTime             @default(now()) @db.Timestamptz(6)
+  generation_jobs ra_generation_jobs[]
+  output_files    ra_output_files[]
+  upload_jobs     ra_upload_jobs[]
+
+  @@map("companies")
+  @@schema("ra")
+}
+
+model ra_generation_jobs {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id     String            @db.Uuid
+  status         String            @default("pending") @db.VarChar(30)
+  progress       Int               @default(0)
+  output_url     String?
+  backend_job_id String?           @db.VarChar(255)
+  created_by     String?           @db.VarChar(255)
+  started_at     DateTime          @default(now()) @db.Timestamptz(6)
+  completed_at   DateTime?         @db.Timestamptz(6)
+  error_message  String?
+  companies      ra_companies      @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  output_files   ra_output_files[]
+
+  @@index([company_id, started_at(sort: Desc)], map: "idx_ra_gen_jobs_company")
+  @@map("generation_jobs")
+  @@schema("ra")
+}
+
+model ra_output_files {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id          String              @db.Uuid
+  generation_job_id   String?             @db.Uuid
+  file_type           String              @db.VarChar(50)
+  file_name           String              @db.VarChar(500)
+  gcs_path            String
+  gcs_references_path String?
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  companies           ra_companies        @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  generation_jobs     ra_generation_jobs? @relation(fields: [generation_job_id], references: [id], onUpdate: NoAction)
+
+  @@index([company_id, created_at(sort: Desc)], map: "idx_ra_output_files_company")
+  @@index([generation_job_id], map: "idx_ra_output_files_job")
+  @@map("output_files")
+  @@schema("ra")
+}
+
+model ra_upload_jobs {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  company_id      String       @db.Uuid
+  status          String       @default("uploading") @db.VarChar(30)
+  progress        Int          @default(0)
+  file_names      Json         @default("[]")
+  file_categories Json?        @default("{}")
+  uploaded_by     String?      @db.VarChar(255)
+  started_at      DateTime     @default(now()) @db.Timestamptz(6)
+  completed_at    DateTime?    @db.Timestamptz(6)
+  error_message   String?
+  gcs_paths       Json?        @default("{}")
+  companies       ra_companies @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([company_id, started_at(sort: Desc)], map: "idx_ra_upload_jobs_company")
+  @@map("upload_jobs")
+  @@schema("ra")
+}
