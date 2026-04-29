@@ -182,7 +182,7 @@ export default function ReportGenerationPage() {
   const [activeIdx, setActiveIdx] = useState(0);
 
   const {
-    jobId, status, progress, message, isGenerating, downloadUrl, error,
+    jobId, status, progress, message, isGenerating, downloadUrl, viewerUrl: backendViewerUrl, error,
     startGeneration, reset: resetGeneration,
   } = useGenerate();
 
@@ -192,9 +192,10 @@ export default function ReportGenerationPage() {
   const canGenerate = company.trim() && selectedSection && !isGenerating
     && (!showSubsidiary || subsidiary.trim());
 
-  const viewerUrl = downloadUrl
-    ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(downloadUrl)}`
-    : undefined;
+  // Use the viewer URL from the backend (a properly-built Office Online embed URL
+  // with a GCS signed URL). Falls back to wrapping the download proxy URL for local dev,
+  // though Office Online won't be able to reach localhost.
+  const viewerUrl = backendViewerUrl || undefined;
 
   const activeSection = sections[activeIdx] || null;
 

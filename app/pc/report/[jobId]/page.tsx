@@ -47,11 +47,9 @@ export default function PCReportPage({ params }: PageProps) {
 
   const downloadUrl = jobData?.pptx_path ? pcService.getDownloadUrl(jobId) : null;
 
-  // Build the Office viewer URL from the download URL
-  // Office Online viewer needs a publicly accessible URL
-  const viewerUrl = downloadUrl
-    ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(downloadUrl)}`
-    : undefined;
+  // Use the viewer URL from the backend (a properly-built Office Online embed URL
+  // with a GCS signed URL) instead of constructing one from the proxy download URL.
+  const viewerUrl = jobData?.viewer_url || undefined;
 
   return (
     <div className="flex h-[calc(100vh-5rem)] flex-col gap-4">

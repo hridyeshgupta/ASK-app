@@ -15,6 +15,7 @@ interface GenerateState {
   message: string;
   isGenerating: boolean;
   downloadUrl: string | null;
+  viewerUrl: string | null;
   error: string | null;
 }
 
@@ -26,6 +27,7 @@ export function useGenerate() {
     message: '',
     isGenerating: false,
     downloadUrl: null,
+    viewerUrl: null,
     error: null,
   });
 
@@ -50,6 +52,7 @@ export function useGenerate() {
           progress: data.progress,
           message: data.message,
           downloadUrl: data.pptx_path ? pcService.getDownloadUrl(jobId) : prev.downloadUrl,
+          viewerUrl: data.viewer_url || prev.viewerUrl,
         }));
 
         // Stop polling on terminal states
@@ -60,6 +63,7 @@ export function useGenerate() {
             isGenerating: false,
             error: data.status === 'failed' ? (data.error || 'Generation failed') : null,
             downloadUrl: data.status === 'completed' ? pcService.getDownloadUrl(jobId) : null,
+            viewerUrl: data.status === 'completed' ? (data.viewer_url || prev.viewerUrl) : null,
           }));
         }
       } catch (err) {
@@ -81,6 +85,7 @@ export function useGenerate() {
       message: 'Starting generation...',
       isGenerating: true,
       downloadUrl: null,
+      viewerUrl: null,
       error: null,
     });
 
@@ -119,6 +124,7 @@ export function useGenerate() {
       message: '',
       isGenerating: false,
       downloadUrl: null,
+      viewerUrl: null,
       error: null,
     });
   }, [stopPolling]);
