@@ -34,7 +34,7 @@ export default function PCDashboardPage() {
         description="Private Credit module: Your AI-powered analysis hub."
         actions={
           <Button asChild className="gap-2">
-            <Link href="/pc/generate">
+            <Link href="/pc/report-generation">
               <FilePlusIcon className="h-4 w-4" />
               Generate New Report
             </Link>

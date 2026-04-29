@@ -64,6 +64,7 @@ export function useUpload() {
   }, []);
 
   // Real upload — sends three file categories to POST /upload
+  // Returns the backend response which includes upload_job_id for polling
   const uploadDocuments = useCallback(async (companyName: string) => {
     setIsUploading(true);
     setUploadError(null);
@@ -77,7 +78,7 @@ export function useUpload() {
         throw new Error('At least one Excel file is required (Financial Models).');
       }
 
-      await pcService.uploadDocuments(
+      const response = await pcService.uploadDocuments(
         companyName,
         presentations.map((f) => f.file),
         financials.map((f) => f.file),
@@ -85,6 +86,7 @@ export function useUpload() {
       );
 
       setUploadSuccess(true);
+      return response;
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed');
       throw err;
