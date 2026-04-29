@@ -3,17 +3,18 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
   SearchIcon, SparklesIcon, GlobeIcon, DatabaseIcon, Loader2Icon,
   AlertTriangleIcon, XIcon, CopyIcon, CheckIcon, FileSpreadsheetIcon,
-  BookOpenIcon, ExternalLinkIcon, BuildingIcon, ChevronDownIcon, ChevronRightIcon,
-  SendIcon, InfoIcon,
+  ExternalLinkIcon, BuildingIcon, ChevronDownIcon, ChevronRightIcon,
+  InfoIcon, FileTextIcon,
 } from 'lucide-react';
 import {
-  searchService, type SearchResult, type SummaryBlock, type ExcelResult, type SearchReference,
+  searchService,
+  type SearchResult, type SummaryData, type SearchReference,
+  type DocumentResult, type ExcelResult,
 } from '@/lib/api/search-service';
 
 interface SearchModalProps { open: boolean; onOpenChange: (open: boolean) => void; }
@@ -22,6 +23,8 @@ interface SearchHistoryEntry {
   id: string; type: 'internal' | 'external'; query: string;
   company?: string; result: SearchResult | null; error: string | null; timestamp: Date;
 }
+
+// ── Markdown renderer ─────────────────────────────────────
 
 function md(text: string): string {
   return text
@@ -32,7 +35,9 @@ function md(text: string): string {
     .replace(/# (.*)/g, '<h1 class="text-[15px] font-bold mt-3 mb-1.5 text-foreground">$1</h1>')
     .replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-foreground">$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/\[(\d+)\]/g, '<sup class="text-violet-500 font-bold text-[10px] ml-0.5">[$1]</sup>')
+    // Inline citations like [D1], [E2], [1], [D1, D2]
+    .replace(/\[([DE]?\d+(?:,\s*[DE]?\d+)*)\]/g, '<sup class="text-violet-500 font-bold text-[10px] ml-0.5 cursor-help">[$1]</sup>')
+    .replace(/^\*   (.*)/gm, '<div class="flex gap-2 ml-1 my-0.5"><span class="text-muted-foreground mt-0.5">•</span><span>$1</span></div>')
     .replace(/^- (.*)/gm, '<div class="flex gap-2 ml-1 my-0.5"><span class="text-muted-foreground mt-0.5">•</span><span>$1</span></div>')
     .replace(/⚠️/g, '<span class="text-amber-500">⚠️</span>')
     .replace(/\n/g, '<br/>');
@@ -40,75 +45,116 @@ function md(text: string): string {
 
 // ── Sub-components ────────────────────────────────────────
 
-function Refs({ refs }: { refs: SearchReference[] }) {
-  if (!refs?.length) return null;
+/** Clickable references list below the summary */
+function RefsBlock({ refs }: { refs: SearchReference[] }) {
+  if (!refs.length) return null;
   return (
-    <div className="mt-3 pt-2.5 border-t border-white/[0.06]">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-violet-400/70 mb-2 flex items-center gap-1.5">
-        <BookOpenIcon className="h-3 w-3" /> Sources
+    <div className="mt-4 pt-3 border-t border-border/20">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-violet-400/60 mb-2">
+        References
       </p>
-      <div className="grid gap-1">
+      <div className="space-y-1">
         {refs.map((r) => (
-          <div key={r.index} className="flex items-center gap-2 text-xs py-1 px-2 rounded-md hover:bg-white/[0.03] transition-colors">
-            <span className="shrink-0 h-5 w-5 flex items-center justify-center rounded-full bg-violet-500/15 text-violet-400 text-[10px] font-bold">{r.index}</span>
-            {r.uri ? (
-              <a href={r.uri} target="_blank" rel="noopener noreferrer"
-                className="text-blue-400 hover:text-blue-300 truncate flex items-center gap-1 transition-colors">
-                <span className="truncate">{r.title}</span>
-                <ExternalLinkIcon className="h-3 w-3 shrink-0 opacity-60" />
-              </a>
-            ) : <span className="text-muted-foreground truncate">{r.title}</span>}
-          </div>
+          <a key={r.tag} href={r.uri} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 text-xs py-1.5 px-2.5 rounded-lg hover:bg-violet-500/[0.06] transition-colors group">
+            <span className="shrink-0 h-5 min-w-[20px] px-1 flex items-center justify-center rounded-md bg-violet-500/15 text-violet-400 text-[10px] font-bold">
+              {r.tag}
+            </span>
+            <span className="truncate text-blue-400 group-hover:text-blue-300 transition-colors">{r.title}</span>
+            <ExternalLinkIcon className="h-3 w-3 shrink-0 text-muted-foreground/40 group-hover:text-blue-400 transition-colors ml-auto" />
+          </a>
         ))}
       </div>
     </div>
   );
 }
 
-function Summary({ block }: { block: SummaryBlock }) {
+/** Single synthesised AI summary */
+function SummaryBlock({ data }: { data: SummaryData }) {
   return (
     <div>
-      {block.label && (
-        <div className="flex items-center gap-1.5 mb-2">
-          <SparklesIcon className="h-3 w-3 text-violet-400" />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-violet-400/80">{block.label}</span>
-        </div>
-      )}
-      <div className="text-[13px] leading-[1.7] text-foreground/85" dangerouslySetInnerHTML={{ __html: md(block.text) }} />
-      <Refs refs={block.references} />
+      <div className="flex items-center gap-1.5 mb-3">
+        <SparklesIcon className="h-3.5 w-3.5 text-violet-400" />
+        <span className="text-[10px] font-bold uppercase tracking-widest text-violet-400/70">AI Summary</span>
+      </div>
+      <div className="text-[13px] leading-[1.8] text-foreground/85" dangerouslySetInnerHTML={{ __html: md(data.text) }} />
+      <RefsBlock refs={data.references} />
     </div>
   );
 }
 
-function ExcelCard({ data }: { data: ExcelResult }) {
-  const [open, setOpen] = useState(true);
-  const cols = data.values.length > 0 ? Object.keys(data.values[0]) : [];
+/** Document results — clickable file list */
+function DocResults({ docs }: { docs: DocumentResult[] }) {
+  if (!docs.length) return null;
   return (
-    <div className="rounded-lg border border-emerald-500/15 overflow-hidden bg-emerald-500/[0.03]">
-      <button onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-emerald-500/[0.06] transition-colors text-left">
+    <div>
+      <div className="flex items-center gap-1.5 mb-2">
+        <FileTextIcon className="h-3 w-3 text-blue-400" />
+        <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400/70">Source Documents</span>
+      </div>
+      <div className="space-y-1">
+        {docs.map((d, i) => (
+          <a key={i} href={d.webLink} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2.5 text-xs py-2 px-3 rounded-lg border border-border/20 hover:border-blue-500/30 hover:bg-blue-500/[0.04] transition-all group">
+            <FileTextIcon className="h-4 w-4 text-blue-400/60 shrink-0" />
+            <span className="truncate text-foreground/80 group-hover:text-blue-400 transition-colors font-medium">{d.filename}</span>
+            <ExternalLinkIcon className="h-3 w-3 shrink-0 text-muted-foreground/30 group-hover:text-blue-400 transition-colors ml-auto" />
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Excel/table data card */
+function ExcelCard({ data }: { data: ExcelResult }) {
+  const [open, setOpen] = useState(false);
+  const hasRows = data.rows.length > 0;
+
+  return (
+    <div className="rounded-lg border border-emerald-500/15 overflow-hidden bg-emerald-500/[0.02]">
+      <button onClick={() => hasRows && setOpen(!open)}
+        className={`w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-emerald-500/[0.05] transition-colors text-left ${!hasRows ? 'cursor-default' : ''}`}>
         <FileSpreadsheetIcon className="h-4 w-4 text-emerald-400 shrink-0" />
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-medium text-foreground/90 truncate">{data.fileName}</p>
-          <div className="flex gap-3 mt-0.5">
-            {data.sheetName && <span className="text-[10px] text-muted-foreground">Sheet: {data.sheetName}</span>}
-            {data.itemLabel && <span className="text-[10px] text-emerald-400 font-medium">{data.itemLabel}</span>}
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-semibold text-foreground/90 truncate">{data.itemLabel}</p>
+            {data.unit && <span className="text-[9px] text-muted-foreground/60 bg-muted/40 px-1.5 py-0.5 rounded">{data.unit}</span>}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5">
+            {data.path && <span className="text-[10px] text-muted-foreground/60 truncate">{data.path}</span>}
+          </div>
+          <div className="flex items-center gap-3 mt-0.5">
+            <span className="text-[10px] text-muted-foreground/50 truncate">{data.fileName}</span>
+            {data.sheetName && <span className="text-[10px] text-muted-foreground/50">Sheet: {data.sheetName}</span>}
           </div>
         </div>
-        {open ? <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRightIcon className="h-3.5 w-3.5 text-muted-foreground" />}
+        {hasRows && (
+          <>
+            <span className="text-[9px] text-emerald-400/60 font-medium shrink-0">{data.rows.length} rows</span>
+            {open ? <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" /> : <ChevronRightIcon className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />}
+          </>
+        )}
+        {!hasRows && <span className="text-[9px] text-muted-foreground/40 shrink-0">No data rows</span>}
       </button>
-      {open && cols.length > 0 && (
-        <div className="overflow-x-auto max-h-56 border-t border-emerald-500/10">
+      {open && hasRows && (
+        <div className="overflow-x-auto max-h-64 border-t border-emerald-500/10">
           <Table>
             <TableHeader>
               <TableRow className="bg-emerald-500/[0.04] hover:bg-emerald-500/[0.04]">
-                {cols.map(c => <TableHead key={c} className="text-[10px] font-bold uppercase tracking-wider h-7 px-3 text-emerald-500/70">{c}</TableHead>)}
+                {data.columns.map(c => (
+                  <TableHead key={c} className="text-[10px] font-bold uppercase tracking-wider h-7 px-3 text-emerald-500/60">{c}</TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.values.map((row, i) => (
-                <TableRow key={i} className="hover:bg-white/[0.02]">
-                  {cols.map(c => <TableCell key={c} className="text-xs px-3 py-1.5 text-foreground/80">{String(row[c] ?? '')}</TableCell>)}
+              {data.rows.map((row, i) => (
+                <TableRow key={i} className="hover:bg-emerald-500/[0.02]">
+                  {data.columns.map(c => {
+                    const val = row[c];
+                    const formatted = typeof val === 'number' ? val.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : String(val ?? '');
+                    return <TableCell key={c} className="text-xs px-3 py-1.5 text-foreground/75 tabular-nums">{formatted}</TableCell>;
+                  })}
                 </TableRow>
               ))}
             </TableBody>
@@ -119,6 +165,7 @@ function ExcelCard({ data }: { data: ExcelResult }) {
   );
 }
 
+/** Full result display for a search entry */
 function ResultContent({ entry }: { entry: SearchHistoryEntry }) {
   if (entry.error) return (
     <div className="flex items-start gap-2.5 p-3 rounded-lg bg-red-500/[0.06] border border-red-500/15">
@@ -127,49 +174,54 @@ function ResultContent({ entry }: { entry: SearchHistoryEntry }) {
     </div>
   );
   if (!entry.result) return null;
-  const { summaryBlocks, excelResults, renderedMarkdown, totalResults, errors } = entry.result;
-  const hasSummaries = summaryBlocks.length > 0;
-  const hasExcel = excelResults.length > 0;
-  const noStructured = !hasSummaries && !hasExcel;
+
+  const { summary, documentResults, excelResults, renderedMarkdown, totalResults, errors } = entry.result;
 
   return (
-    <div className="space-y-3">
-      {/* Result count pill */}
+    <div className="space-y-4">
+      {/* Result count */}
       <div className="flex items-center gap-2">
         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
           totalResults > 0
             ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20'
             : 'bg-muted/50 text-muted-foreground ring-1 ring-border/50'
         }`}>
-          {totalResults} result{totalResults !== 1 ? 's' : ''}
+          {totalResults.toLocaleString()} result{totalResults !== 1 ? 's' : ''}
         </span>
       </div>
 
-      {/* AI Summaries */}
-      {hasSummaries && (
-        <div className="space-y-4">
-          {summaryBlocks.map((b, i) => <Summary key={i} block={b} />)}
-        </div>
+      {/* AI Summary (single synthesised answer) */}
+      {summary && summary.text && <SummaryBlock data={summary} />}
+
+      {/* Source Documents */}
+      {documentResults.length > 0 && (
+        <>
+          {summary && <div className="h-px bg-border/20" />}
+          <DocResults docs={documentResults} />
+        </>
       )}
 
-      {/* Excel data */}
-      {hasExcel && (
-        <div className="space-y-2">
-          {hasSummaries && <div className="h-px bg-border/30 my-1" />}
-          <div className="flex items-center gap-1.5">
-            <FileSpreadsheetIcon className="h-3 w-3 text-emerald-400" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400/80">Data Tables</span>
+      {/* Excel / Financial Data Tables */}
+      {excelResults.length > 0 && (
+        <>
+          <div className="h-px bg-border/20" />
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <FileSpreadsheetIcon className="h-3 w-3 text-emerald-400" />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400/70">Financial Data</span>
+              <span className="text-[9px] text-muted-foreground/40 ml-1">{excelResults.length} table{excelResults.length !== 1 ? 's' : ''}</span>
+            </div>
+            {excelResults.map((d, i) => <ExcelCard key={i} data={d} />)}
           </div>
-          {excelResults.map((d, i) => <ExcelCard key={i} data={d} />)}
-        </div>
+        </>
       )}
 
-      {/* Fallback markdown */}
-      {noStructured && renderedMarkdown && (
+      {/* Fallback: rendered markdown if no structured data */}
+      {!summary && documentResults.length === 0 && excelResults.length === 0 && renderedMarkdown && (
         <div className="text-[13px] leading-[1.7] text-foreground/85" dangerouslySetInnerHTML={{ __html: md(renderedMarkdown) }} />
       )}
 
-      {/* Warnings (e.g. DataStore not found) */}
+      {/* Warnings */}
       {errors?.length > 0 && totalResults === 0 && (
         <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/[0.06] border border-amber-500/15 text-xs">
           <InfoIcon className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
@@ -230,17 +282,15 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
 
   const getText = (e: SearchHistoryEntry) => {
     if (!e.result) return '';
-    const parts = e.result.summaryBlocks.map(b => b.text);
-    if (!parts.length && e.result.renderedMarkdown) parts.push(e.result.renderedMarkdown);
-    return parts.join('\n\n');
+    return e.result.summary?.text || e.result.renderedMarkdown || '';
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] max-h-[85vh] flex flex-col p-0 gap-0 overflow-hidden rounded-2xl" showCloseButton={false}>
+      <DialogContent className="sm:max-w-[720px] !max-h-[85vh] !flex !flex-col p-0 gap-0 overflow-hidden rounded-2xl" showCloseButton={false}>
 
         {/* ── Header ── */}
-        <div className="relative px-5 pt-4 pb-3 border-b border-border/40 bg-gradient-to-r from-violet-500/[0.04] to-blue-500/[0.04]">
+        <div className="relative px-5 pt-4 pb-3 border-b border-border/40 bg-gradient-to-r from-violet-500/[0.04] to-blue-500/[0.04] shrink-0">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2.5 text-[15px] font-semibold">
               <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-violet-500/25 to-blue-500/25 flex items-center justify-center ring-1 ring-violet-500/15">
@@ -259,10 +309,9 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
         </div>
 
         {/* ── Chat / Results Area ── */}
-        <ScrollArea className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="px-5 py-4 space-y-4">
             {history.length === 0 && !searching ? (
-              /* Empty state */
               <div className="flex flex-col items-center justify-center py-14 text-center">
                 <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-violet-500/10 to-blue-500/10 flex items-center justify-center ring-1 ring-violet-500/10 mb-4">
                   <SearchIcon className="h-6 w-6 text-violet-400/70" />
@@ -305,10 +354,6 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
 
                     {/* AI response card */}
                     <div className="group relative bg-card/40 rounded-2xl rounded-tl-md border border-border/30 p-4 hover:border-border/50 transition-colors">
-                      <div className="flex items-center gap-1.5 mb-3">
-                        <SparklesIcon className="h-3 w-3 text-violet-400" />
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-violet-400/70">AI Response</span>
-                      </div>
                       <ResultContent entry={entry} />
                       {entry.result && (
                         <button onClick={() => copy(getText(entry), entry.id)}
@@ -344,10 +389,10 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
               </>
             )}
           </div>
-        </ScrollArea>
+        </div>
 
         {/* ── Input Area ── */}
-        <div className="border-t border-border/40 bg-background/80 backdrop-blur-sm px-4 py-3 space-y-2.5">
+        <div className="border-t border-border/40 bg-background/80 backdrop-blur-sm px-4 py-3 space-y-2.5 shrink-0">
           {/* Company filter */}
           <div className="flex items-center gap-2">
             <BuildingIcon className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />

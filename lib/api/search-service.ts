@@ -1,35 +1,43 @@
 // lib/api/search-service.ts
 // API integration for Custom Search (Internal + External).
-// Backend endpoints (from OpenAPI spec):
+// Backend endpoints:
 //   GET /internal-search?query=...&company=...
 //   GET /external-search?query=...
 // Both are proxied through /api/proxy/* to avoid CORS.
-// Internal search queries Vertex AI data stores (PDFs/images/Excel),
-// Gemini 2.5 Pro summarises the results.
-// External search uses Google Search (currently 403 — GCP permission issue).
 
 // ── Structured types for rich rendering ──────────────────────
 
 /** A single reference cited in the AI summary */
 export interface SearchReference {
-  index: number;       // e.g. 1, 2, 3
-  title: string;       // document / file name
-  uri?: string;        // optional clickable link (GCS URL or web link)
+  tag: string;           // e.g. "D1", "E2", "1"
+  title: string;         // document / file name
+  uri: string;           // clickable link (GCS URL or web link)
 }
 
-/** A summary block (from the AI) with its own references */
-export interface SummaryBlock {
-  text: string;                  // the AI-generated summary markdown
-  references: SearchReference[]; // numbered references within this summary
-  label?: string;                // e.g. "AI Summary from Documents", "AI Summary from Financial Data"
+/** The synthesised AI summary with extracted references */
+export interface SummaryData {
+  text: string;                    // the AI-generated summary markdown (without the References block)
+  references: SearchReference[];   // extracted [D1], [E2] etc. references with links
 }
 
-/** An Excel/table result row — key/value pairs */
+/** A document result from the search */
+export interface DocumentResult {
+  filename: string;
+  company: string;
+  webLink: string;         // clickable https:// URL
+  gcsUri: string;          // gs:// URI
+  snippets: string[];
+}
+
+/** An Excel/table result with pre-structured table data */
 export interface ExcelResult {
   fileName: string;
-  sheetName?: string;
-  itemLabel?: string;
-  values: Record<string, string | number>[];  // rows of data
+  sheetName: string;
+  itemLabel: string;
+  unit: string;
+  path: string;            // e.g. "Profit & Loss > Revenue > Total Revenue"
+  columns: string[];       // e.g. ["Period", "Value"]
+  rows: Record<string, string | number>[];
 }
 
 /** Top-level search result returned to the UI */
@@ -38,9 +46,10 @@ export interface SearchResult {
   totalResults: number;
   errors: string[];
 
-  // Structured data for rich rendering
-  summaryBlocks: SummaryBlock[];
-  excelResults: ExcelResult[];
+  // Structured data
+  summary: SummaryData | null;        // single synthesised AI summary
+  documentResults: DocumentResult[];  // document-kind results
+  excelResults: ExcelResult[];        // excel/table-kind results
 
   // Legacy flat text fallback
   renderedMarkdown: string;
@@ -48,32 +57,22 @@ export interface SearchResult {
 
 // ── Backend response types ───────────────────────────────────
 
-interface BackendReference {
-  index?: number;
-  title?: string;
-  uri?: string;
-  web_link?: string;
-  gcs_url?: string;
-}
-
-interface BackendSummaryBlock {
-  summary?: string;
-  text?: string;
-  references?: BackendReference[];
-  label?: string;
-}
-
 interface BackendResultItem {
-  kind?: string;          // "document" | "excel" | "table" | etc.
+  kind?: string;
   company?: string;
-  original_file_name?: string;
-  file_name?: string;
+  original_filename?: string;
+  gcs_uri?: string;
+  web_link?: string;
+  snippets?: string[];
   sheet_name?: string;
   item_label?: string;
-  entry_labels?: string;
-  values?: Record<string, string | number>[];
-  rows?: Record<string, string | number>[];
-  // ... other fields we can ignore
+  unit?: string;
+  path?: string;
+  values?: Record<string, number>;
+  table?: {
+    columns: string[];
+    rows: Record<string, string | number>[];
+  };
   [key: string]: unknown;
 }
 
@@ -85,8 +84,7 @@ interface BackendSearchData {
   total_results: number;
   errors: string[];
   summary?: string;
-  summaries?: (string | BackendSummaryBlock)[];
-  raw_summaries?: (string | BackendSummaryBlock)[];
+  raw_summaries?: string[];
   results: BackendResultItem[];
   rendered_markdown: string;
 }
@@ -111,73 +109,93 @@ function extractErrorMessage(err: SearchErrorResponse, fallback: string): string
 
 // ── Parse helpers ────────────────────────────────────────────
 
-function parseReference(ref: BackendReference, idx: number): SearchReference {
-  return {
-    index: ref.index ?? idx + 1,
-    title: ref.title || `Source ${idx + 1}`,
-    uri: ref.uri || ref.web_link || ref.gcs_url || undefined,
-  };
+/**
+ * Parse the `summary` field which looks like:
+ *   ### Synthesised Answer\n\n...text...[D1]...\n\n**References:**\n[D1] [Title](url)\n[E2] [Title](url)
+ *
+ * Extracts the text (before **References:**) and the references list.
+ */
+function parseSummary(summaryStr: string): SummaryData {
+  if (!summaryStr || !summaryStr.trim()) {
+    return { text: '', references: [] };
+  }
+
+  // Split at **References:** to separate text from reference list
+  const refSplitIndex = summaryStr.indexOf('**References:**');
+  let textPart: string;
+  let refsPart: string;
+
+  if (refSplitIndex !== -1) {
+    textPart = summaryStr.substring(0, refSplitIndex).trim();
+    refsPart = summaryStr.substring(refSplitIndex + '**References:**'.length).trim();
+  } else {
+    textPart = summaryStr.trim();
+    refsPart = '';
+  }
+
+  // Parse references: each line looks like [D1] [Title](url) or [1] [Title](url)
+  const references: SearchReference[] = [];
+  if (refsPart) {
+    // Match lines like: [D1] [Some Title](https://some.url/path)
+    const refRegex = /\[([^\]]+)\]\s+\[([^\]]*)\]\(([^)]+)\)/g;
+    let match;
+    while ((match = refRegex.exec(refsPart)) !== null) {
+      references.push({
+        tag: match[1],       // "D1", "E2", etc.
+        title: match[2],     // document title
+        uri: match[3],       // URL
+      });
+    }
+  }
+
+  return { text: textPart, references };
 }
 
-function parseSummaryBlocks(data: BackendSearchData): SummaryBlock[] {
-  const blocks: SummaryBlock[] = [];
+function parseDocumentResults(results: BackendResultItem[]): DocumentResult[] {
+  const docs: DocumentResult[] = [];
+  const seen = new Set<string>(); // deduplicate by filename
 
-  // Try raw_summaries first (structured), then summaries
-  const source = data.raw_summaries ?? data.summaries;
+  for (const item of results) {
+    if (item.kind !== 'document') continue;
+    const filename = item.original_filename || 'Document';
 
-  if (source && source.length > 0) {
-    source.forEach((item, i) => {
-      if (typeof item === 'string') {
-        // Plain text summary
-        if (item.trim()) {
-          blocks.push({
-            text: item,
-            references: [],
-            label: blocks.length === 0 ? 'AI Summary' : `AI Summary ${blocks.length + 1}`,
-          });
-        }
-      } else {
-        // Structured summary block
-        const text = item.summary || item.text || '';
-        const refs = (item.references || []).map((r, ri) => parseReference(r, ri));
-        if (text.trim()) {
-          blocks.push({
-            text,
-            references: refs,
-            label: item.label || (i === 0 ? 'AI Summary from Documents' : 'AI Summary from Financial Data'),
-          });
-        }
-      }
+    // Deduplicate — backend returns same doc from raw_files/ and uploads/
+    if (seen.has(filename)) continue;
+    seen.add(filename);
+
+    docs.push({
+      filename,
+      company: item.company || '',
+      webLink: item.web_link || '',
+      gcsUri: item.gcs_uri || '',
+      snippets: (item.snippets || []).filter(Boolean),
     });
   }
 
-  // Fallback: if no structured summaries, use the top-level summary string
-  if (blocks.length === 0 && data.summary && data.summary.trim()) {
-    blocks.push({
-      text: data.summary,
-      references: [],
-      label: 'AI Summary',
-    });
-  }
-
-  return blocks;
+  return docs;
 }
 
 function parseExcelResults(results: BackendResultItem[]): ExcelResult[] {
   const excelResults: ExcelResult[] = [];
 
   for (const item of results) {
-    const kind = (item.kind || '').toLowerCase();
-    if (kind !== 'excel' && kind !== 'table') continue;
+    if (item.kind !== 'excel' && item.kind !== 'table') continue;
 
-    const rows = item.values || item.rows || [];
-    if (!rows || rows.length === 0) continue;
+    // Use pre-structured table data from backend
+    const table = item.table;
+    const rows = table?.rows || [];
+
+    // Skip tables with no data rows
+    if (rows.length === 0) continue;
 
     excelResults.push({
-      fileName: item.original_file_name || item.file_name || 'Unknown File',
-      sheetName: item.sheet_name,
-      itemLabel: item.item_label || item.entry_labels,
-      values: rows,
+      fileName: item.original_filename || 'Unknown File',
+      sheetName: item.sheet_name || '',
+      itemLabel: item.item_label || 'N/A',
+      unit: (item.unit as string) || '',
+      path: (item.path as string) || '',
+      columns: table?.columns || ['Period', 'Value'],
+      rows,
     });
   }
 
@@ -187,14 +205,17 @@ function parseExcelResults(results: BackendResultItem[]): ExcelResult[] {
 function parseSearchResponse(raw: BackendEnvelope, query: string): SearchResult {
   const d = raw.data;
 
-  const summaryBlocks = parseSummaryBlocks(d);
+  // Use `summary` (synthesised answer) as the single AI summary
+  const summary = d.summary ? parseSummary(d.summary) : null;
+  const documentResults = parseDocumentResults(d.results || []);
   const excelResults = parseExcelResults(d.results || []);
 
   return {
     query,
     totalResults: d.total_results || 0,
     errors: d.errors || [],
-    summaryBlocks,
+    summary,
+    documentResults,
     excelResults,
     renderedMarkdown: d.rendered_markdown || '',
   };
@@ -234,7 +255,6 @@ export const searchService = {
   /**
    * GET /external-search?query=...
    * Google Search via GCP.
-   * Currently returns 403 due to GCP permissions — handled gracefully in UI.
    */
   async externalSearch(query: string): Promise<SearchResult> {
     const params = new URLSearchParams({ query });
