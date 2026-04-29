@@ -1,8 +1,7 @@
 // lib/api/pc-service.ts
-// Real API integration with the PPT Agent backend on Cloud Run.
+// API integration with the PPT Agent backend on Cloud Run.
+// All requests are proxied through /api/proxy/* to avoid CORS.
 // Endpoints: /upload, /generate, /status/:job_id, /download/:job_id, /manifest/:company, /merge/:company
-
-import { PC_API_BASE } from '@/lib/constants';
 
 // --- Response types matching backend's envelope format ---
 
@@ -15,6 +14,7 @@ interface ApiEnvelope<T = unknown> {
 export interface UploadResponse {
   company_name: string;
   files: string[];
+  upload_job_id: string;
 }
 
 export interface GenerateResponse {
@@ -31,6 +31,16 @@ export interface StatusResponse {
   pptx_path: string | null;
   viewer_url: string | null;
   error: string | null;
+}
+
+export interface UploadStatusResponse {
+  upload_job_id: string;
+  status: string;   // pending | processing | indexing | completed | failed
+  progress: number; // 0–100
+  file_names: string[];
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 export interface ManifestRun {
@@ -77,7 +87,8 @@ export const pcService = {
       }
     }
 
-    const response = await fetch(`${PC_API_BASE}/upload`, {
+    // Route through Next.js proxy to avoid CORS issues
+    const response = await fetch('/api/proxy/upload', {
       method: 'POST',
       body: formData,
       // Note: Do NOT set Content-Type header — browser sets it with boundary for multipart
@@ -85,7 +96,7 @@ export const pcService = {
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({ message: response.statusText }));
-      throw new Error(err.message || `Upload failed: ${response.status}`);
+      throw new Error(err.error || err.message || `Upload failed: ${response.status}`);
     }
 
     return response.json();
@@ -102,14 +113,14 @@ export const pcService = {
     formData.append('subsidiary_name', subsidiaryName);
     formData.append('section', section);
 
-    const response = await fetch(`${PC_API_BASE}/generate`, {
+    const response = await fetch('/api/proxy/generate', {
       method: 'POST',
       body: formData,
     });
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({ message: response.statusText }));
-      throw new Error(err.message || `Generate failed: ${response.status}`);
+      throw new Error(err.error || err.message || `Generate failed: ${response.status}`);
     }
 
     return response.json();
@@ -117,28 +128,40 @@ export const pcService = {
 
   // GET /status/:job_id — poll for progress
   async pollStatus(jobId: string): Promise<ApiEnvelope<StatusResponse>> {
-    const response = await fetch(`${PC_API_BASE}/status/${jobId}`);
+    const response = await fetch(`/api/proxy/status/${jobId}`);
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({ message: response.statusText }));
-      throw new Error(err.message || `Status check failed: ${response.status}`);
+      throw new Error(err.error || err.message || `Status check failed: ${response.status}`);
     }
 
     return response.json();
   },
 
-  // GET /download/:job_id — returns the PPTX file URL
+  // GET /upload/status/:upload_job_id — poll backend pre-processing progress
+  async pollUploadStatus(uploadJobId: string): Promise<ApiEnvelope<UploadStatusResponse>> {
+    const response = await fetch(`/api/proxy/upload/status/${uploadJobId}`);
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: response.statusText }));
+      throw new Error(err.error || err.message || `Upload status check failed: ${response.status}`);
+    }
+
+    return response.json();
+  },
+
+  // GET /download/:job_id — returns the PPTX file URL (through proxy)
   getDownloadUrl(jobId: string): string {
-    return `${PC_API_BASE}/download/${jobId}`;
+    return `/api/proxy/download/${jobId}`;
   },
 
   // GET /manifest/:company_name — list all completed runs
   async getManifest(companyName: string): Promise<ApiEnvelope<ManifestResponse>> {
-    const response = await fetch(`${PC_API_BASE}/manifest/${encodeURIComponent(companyName)}`);
+    const response = await fetch(`/api/proxy/manifest/${encodeURIComponent(companyName)}`);
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({ message: response.statusText }));
-      throw new Error(err.message || `Manifest fetch failed: ${response.status}`);
+      throw new Error(err.error || err.message || `Manifest fetch failed: ${response.status}`);
     }
 
     return response.json();
@@ -149,7 +172,7 @@ export const pcService = {
     companyName: string,
     jobIds?: string[],
   ): Promise<ApiEnvelope<MergeResponse>> {
-    const response = await fetch(`${PC_API_BASE}/merge/${encodeURIComponent(companyName)}`, {
+    const response = await fetch(`/api/proxy/merge/${encodeURIComponent(companyName)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: jobIds ? JSON.stringify(jobIds) : JSON.stringify(null),
@@ -157,14 +180,14 @@ export const pcService = {
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({ message: response.statusText }));
-      throw new Error(err.message || `Merge failed: ${response.status}`);
+      throw new Error(err.error || err.message || `Merge failed: ${response.status}`);
     }
 
     return response.json();
   },
 
-  // GET /merge/download/:company_name — download merged deck
+  // GET /merge/download/:company_name — download merged deck (through proxy)
   getMergedDownloadUrl(companyName: string): string {
-    return `${PC_API_BASE}/merge/download/${encodeURIComponent(companyName)}`;
+    return `/api/proxy/merge/download/${encodeURIComponent(companyName)}`;
   },
 };
