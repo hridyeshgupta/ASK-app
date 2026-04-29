@@ -2,7 +2,7 @@
 
 // components/layout/sidebar.tsx
 // Collapsible sidebar with navigation — role-based visibility for admin items
-// Includes Gemini sparkle button for Custom Search (ASK-19)
+// Includes Gemini sparkle button for Custom Search
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -104,14 +104,14 @@ export function AppSidebar({ module }: AppSidebarProps) {
                   isActive={pathname === `/${module}/dashboard`}
                   tooltip="Dashboard"
                 >
-                  <Link href={`/${module}/dashboard`}>
-                    <LayoutDashboardIcon className="h-4 w-4" />
+                  <Link href={`/${module}/dashboard`} className="group/dash">
+                    <LayoutDashboardIcon className="h-4 w-4 transition-transform group-hover/dash:scale-110 group-hover/dash:rotate-12" />
                     <span>Dashboard</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
-              {/* ✨ Custom Search — Gemini sparkle button (ASK-19) */}
+              {/* Custom Search*/}
               <SidebarMenuItem>
                 <SidebarMenuButton
                   id="custom-search-trigger"
@@ -120,9 +120,9 @@ export function AppSidebar({ module }: AppSidebarProps) {
                   className="group/search"
                 >
                   <div className="flex h-4 w-4 items-center justify-center">
-                    <SparklesIcon className="h-4 w-4 text-violet-500 transition-transform group-hover/search:scale-110 group-hover/search:rotate-12" />
+                    <SparklesIcon className="h-4 w-4 text-black-500 transition-transform group-hover/search:scale-110 group-hover/search:rotate-12" />
                   </div>
-                  <span className="bg-gradient-to-r from-violet-500 to-blue-500 bg-clip-text text-transparent font-medium">
+                  <span className="text-black-500 font-medium">
                     Custom Search
                   </span>
                 </SidebarMenuButton>
@@ -135,8 +135,8 @@ export function AppSidebar({ module }: AppSidebarProps) {
                   isActive={pathname === (module === 'ra' ? `/${module}/generate` : `/${module}/report-generation`)}
                   tooltip="Report Generation"
                 >
-                  <Link href={module === 'ra' ? `/${module}/generate` : `/${module}/report-generation`}>
-                    <FilePlusIcon className="h-4 w-4" />
+                  <Link href={module === 'ra' ? `/${module}/generate` : `/${module}/report-generation`} className="group/report">
+                    <FilePlusIcon className="h-4 w-4 transition-transform group-hover/report:scale-110 group-hover/report:rotate-12" />
                     <span>Report Generation</span>
                   </Link>
                 </SidebarMenuButton>
@@ -149,8 +149,8 @@ export function AppSidebar({ module }: AppSidebarProps) {
                   isActive={pathname === `/${module}/history`}
                   tooltip="Reports"
                 >
-                  <Link href={`/${module}/history`}>
-                    <HistoryIcon className="h-4 w-4" />
+                  <Link href={`/${module}/history`} className="group/history">
+                    <HistoryIcon className="h-4 w-4 transition-transform group-hover/history:scale-110 group-hover/history:rotate-12" />
                     <span>Reports</span>
                   </Link>
                 </SidebarMenuButton>
@@ -173,7 +173,7 @@ export function AppSidebar({ module }: AppSidebarProps) {
                       tooltip={item.title}
                     >
                       <Link href={item.href}>
-                        <item.icon className="h-4 w-4" />
+                        <item.icon className="h-4 w-4 transition-transform group-hover/user:scale-110 group-hover/user:rotate-12" />
                         <span>{item.title}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -198,7 +198,7 @@ export function AppSidebar({ module }: AppSidebarProps) {
 
       <SidebarRail />
 
-      {/* Custom Search Modal (ASK-19) */}
+      {/* Custom Search Modal*/}
       <SearchModal open={searchOpen} onOpenChange={setSearchOpen} />
     </Sidebar>
   );
