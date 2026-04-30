@@ -33,9 +33,25 @@ export async function GET(
 
   try {
     const response = await fetch(url);
-    const data = await response.json().catch(() => ({ error: response.statusText }));
 
-    return NextResponse.json(data, { status: response.status });
+    // Check content-type to decide how to proxy the response.
+    // Binary responses (e.g. PPTX downloads) must be streamed through as-is;
+    // only JSON responses should be parsed and re-serialised.
+    const respContentType = response.headers.get('content-type') || '';
+    if (respContentType.includes('application/json')) {
+      const data = await response.json().catch(() => ({ error: response.statusText }));
+      return NextResponse.json(data, { status: response.status });
+    }
+
+    // Non-JSON (binary files like .pptx) — stream through with original headers
+    const blob = await response.blob();
+    return new NextResponse(blob, {
+      status: response.status,
+      headers: {
+        'Content-Type': respContentType,
+        'Content-Disposition': response.headers.get('content-disposition') || '',
+      },
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     console.error(`[Proxy GET] /${backendPath} error:`, msg);

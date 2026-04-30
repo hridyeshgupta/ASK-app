@@ -36,7 +36,7 @@ import { useUpload } from '@/lib/hooks/use-upload';
 import type { UploadedFile } from '@/lib/hooks/use-upload';
 import { useGenerate } from '@/lib/hooks/use-generate';
 import { pcService } from '@/lib/api/pc-service';
-import { POLL_INTERVAL_MS } from '@/lib/constants';
+import { POLL_INTERVAL_MS, UPLOAD_POLL_TIMEOUT_MS, MAX_CONSECUTIVE_POLL_ERRORS } from '@/lib/constants';
 import {
   CheckIcon,
   ChevronRightIcon,
@@ -173,6 +173,8 @@ export default function ReportGenerationPage() {
   const [backendUploadProgress, setBackendUploadProgress] = useState(0);
   const [backendUploadError, setBackendUploadError] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const uploadPollStartedRef = useRef<number | null>(null);
+  const uploadPollErrorsRef = useRef<number>(0);
 
   // Generate state
   const [selectedSection, setSelectedSection] = useState('');
@@ -182,8 +184,8 @@ export default function ReportGenerationPage() {
   const [activeIdx, setActiveIdx] = useState(0);
 
   const {
-    jobId, status, progress, message, isGenerating, downloadUrl, error,
-    startGeneration, reset: resetGeneration,
+    jobId, status, progress, message, isGenerating, downloadUrl, viewerUrl: backendViewerUrl, error,
+    startGeneration, resumePolling, reset: resetGeneration,
   } = useGenerate();
 
   // Section config
@@ -192,9 +194,10 @@ export default function ReportGenerationPage() {
   const canGenerate = company.trim() && selectedSection && !isGenerating
     && (!showSubsidiary || subsidiary.trim());
 
-  const viewerUrl = downloadUrl
-    ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(downloadUrl)}`
-    : undefined;
+  // Use the viewer URL from the backend (a properly-built Office Online embed URL
+  // with a GCS signed URL). Falls back to wrapping the download proxy URL for local dev,
+  // though Office Online won't be able to reach localhost.
+  const viewerUrl = backendViewerUrl || undefined;
 
   const activeSection = sections[activeIdx] || null;
 
@@ -260,7 +263,8 @@ export default function ReportGenerationPage() {
 
   // ─── Backend Upload Polling ──────────────────────────────
 
-  // Poll the backend's /upload/status/{id} for pre-processing progress
+  // Poll the backend's /upload/status/{id} for pre-processing progress.
+  // Safety limits: stops after UPLOAD_POLL_TIMEOUT_MS or MAX_CONSECUTIVE_POLL_ERRORS.
   useEffect(() => {
     if (!backendUploadJobId || backendUploadStatus === 'completed' || backendUploadStatus === 'failed') {
       // Stop polling when done or failed
@@ -268,26 +272,58 @@ export default function ReportGenerationPage() {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
+      uploadPollStartedRef.current = null;
+      uploadPollErrorsRef.current = 0;
       return;
     }
 
+    // Track when polling started
+    if (!uploadPollStartedRef.current) {
+      uploadPollStartedRef.current = Date.now();
+    }
+    uploadPollErrorsRef.current = 0;
+
     const poll = async () => {
+      // ── Safety: absolute timeout ────────────────────────────
+      const elapsed = Date.now() - (uploadPollStartedRef.current ?? Date.now());
+      if (elapsed > UPLOAD_POLL_TIMEOUT_MS) {
+        console.warn(`[upload poll] Timed out after ${Math.round(elapsed / 60_000)}min`);
+        if (pollTimerRef.current) {
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+        setBackendUploadStatus('failed');
+        setBackendUploadError('Upload processing timed out — the backend may be down. Please try again later.');
+        return;
+      }
+
       try {
         const res = await pcService.pollUploadStatus(backendUploadJobId);
         const data = res.data;
+        uploadPollErrorsRef.current = 0; // reset on success
         setBackendUploadStatus(data.status);
         setBackendUploadProgress(data.progress);
         if (data.error) setBackendUploadError(data.error);
 
         if (data.status === 'completed' || data.status === 'failed') {
-          // Sync final status to our local DB
-          // (use the frontend DB job id if we have one)
           if (data.status === 'completed') {
             await checkUploadStatus();
           }
         }
       } catch (err) {
-        console.error('[upload poll] error:', err);
+        uploadPollErrorsRef.current += 1;
+        console.error(`[upload poll] error (${uploadPollErrorsRef.current}/${MAX_CONSECUTIVE_POLL_ERRORS}):`, err);
+
+        // ── Safety: stop after too many consecutive failures ──
+        if (uploadPollErrorsRef.current >= MAX_CONSECUTIVE_POLL_ERRORS) {
+          console.warn('[upload poll] Too many consecutive errors — stopping');
+          if (pollTimerRef.current) {
+            clearInterval(pollTimerRef.current);
+            pollTimerRef.current = null;
+          }
+          setBackendUploadStatus('failed');
+          setBackendUploadError('Lost connection to the server. Please check if the backend is running and try again.');
+        }
       }
     };
 
