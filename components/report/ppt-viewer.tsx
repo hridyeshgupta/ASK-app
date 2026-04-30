@@ -52,13 +52,16 @@ export function PptViewer({ viewerUrl, pptxUrl }: PptViewerProps) {
         </div>
       </div>
 
-      {/* Office viewer iframe */}
+      {/* Office viewer iframe — no sandbox: Office Online (view.officeapps.live.com)
+          needs full browser capabilities to render PPTX files. Restricting with
+          sandbox causes a blank white iframe. */}
       <div className="flex-1 rounded-lg border border-border/50 overflow-hidden bg-white">
         <iframe
           src={viewerUrl}
           className="h-full w-full min-h-[500px]"
           title="Report Viewer"
-          sandbox="allow-scripts allow-same-origin"
+          allowFullScreen
+          referrerPolicy="no-referrer"
         />
       </div>
     </div>

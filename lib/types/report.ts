@@ -1,8 +1,8 @@
 // lib/types/report.ts
 //  "API immediately returns 'in progress,' frontend polls the DB endpoint,
 //       backend updates progress % at checkpoints"
-export type JobStatus = 'pending' | 'extracting' | 'planning'
-  | 'building_slides' | 'uploading' | 'completed' | 'failed';
+export type JobStatus = 'pending' | 'generating' | 'extracting' | 'planning'
+  | 'building_slides' | 'uploading' | 'processing' | 'completed' | 'failed';
 
 export interface Report {
   jobId: string;

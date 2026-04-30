@@ -30,10 +30,12 @@ interface ProgressTrackerProps {
 
 const statusConfig: Record<JobStatus, { icon: React.ElementType; label: string; color: string }> = {
   pending: { icon: ClockIcon, label: 'Queued', color: 'text-muted-foreground' },
+  generating: { icon: Loader2Icon, label: 'Generating', color: 'text-indigo-500' },
   extracting: { icon: FileSearchIcon, label: 'Extracting Data', color: 'text-blue-500' },
   planning: { icon: BrainCircuitIcon, label: 'Planning Structure', color: 'text-purple-500' },
   building_slides: { icon: LayoutIcon, label: 'Building Slides', color: 'text-amber-500' },
   uploading: { icon: UploadCloudIcon, label: 'Uploading', color: 'text-cyan-500' },
+  processing: { icon: Loader2Icon, label: 'Processing', color: 'text-orange-500' },
   completed: { icon: CheckCircle2Icon, label: 'Completed', color: 'text-emerald-500' },
   failed: { icon: XCircleIcon, label: 'Failed', color: 'text-destructive' },
 };
