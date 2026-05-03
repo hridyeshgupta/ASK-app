@@ -26,12 +26,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
+
 import { useUpload } from '@/lib/hooks/use-upload';
 import type { UploadedFile } from '@/lib/hooks/use-upload';
 import { useGenerate } from '@/lib/hooks/use-generate';
@@ -52,6 +54,7 @@ import {
   FileIcon,
   XIcon,
   AlertTriangleIcon,
+  LayoutGridIcon,
 } from 'lucide-react';
 
 // ─── Step definitions ────────────────────────────────────────
@@ -178,26 +181,39 @@ export default function ReportGenerationPage() {
 
   // Generate state
   const [selectedSection, setSelectedSection] = useState('');
+  const [generatingSection, setGeneratingSection] = useState(''); // which section the hook is actively generating
   const [subsidiary, setSubsidiary] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [sections, setSections] = useState<SectionItem[]>([]);
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [sections, setSections] = useState<SectionItem[]>(
+    AVAILABLE_SECTIONS.map((s) => ({ id: toId(s.name), name: s.name, status: 'idle' as const }))
+  );
+  const [activeIdx, setActiveIdx] = useState(-1); // -1 = no section selected
+
+  // Subsidiary modal
+  const [showSubsidiaryModal, setShowSubsidiaryModal] = useState(false);
+  const [pendingSectionName, setPendingSectionName] = useState('');
+  const [modalSubsidiary, setModalSubsidiary] = useState('');
+
+  // Existing completed jobs from DB: sectionId → { backendJobId, viewerUrl, downloadUrl }
+  const [sectionJobs, setSectionJobs] = useState<Record<string, {
+    dbId: string;
+    backendJobId: string;
+    viewerUrl?: string;
+    downloadUrl?: string;
+  }>>({});
+  const [isLoadingExistingJobs, setIsLoadingExistingJobs] = useState(false);
 
   const {
     jobId, status, progress, message, isGenerating, downloadUrl, viewerUrl: backendViewerUrl, error,
     startGeneration, resumePolling, reset: resetGeneration,
   } = useGenerate();
 
-  // Section config
-  const sectionConfig = AVAILABLE_SECTIONS.find((s) => s.name === selectedSection);
-  const showSubsidiary = sectionConfig?.needsSubsidiary ?? false;
-  const canGenerate = company.trim() && selectedSection && !isGenerating
-    && (!showSubsidiary || subsidiary.trim());
-
-  // Use the viewer URL from the backend (a properly-built Office Online embed URL
-  // with a GCS signed URL). Falls back to wrapping the download proxy URL for local dev,
-  // though Office Online won't be able to reach localhost.
-  const viewerUrl = backendViewerUrl || undefined;
+  // Build the viewer URL for the Office Online "Open in new tab" button.
+  const viewerUrl = (() => {
+    if (!backendViewerUrl) return undefined;
+    if (backendViewerUrl.includes('view.officeapps.live.com')) return backendViewerUrl;
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(backendViewerUrl)}`;
+  })();
 
   const activeSection = sections[activeIdx] || null;
 
@@ -408,42 +424,191 @@ export default function ReportGenerationPage() {
     }
   };
 
-  // Create generation job record in DB
-  const handleGenerate = async () => {
-    if (!canGenerate) return;
+  // ─── Fetch existing generation jobs from DB ────────────────
+  const fetchExistingJobs = useCallback(async () => {
+    if (!companyId) return;
+    setIsLoadingExistingJobs(true);
+    try {
+      console.log('[fetchExistingJobs] Fetching jobs for companyId:', companyId);
+      const res = await fetch(`/api/generation-jobs?company_id=${companyId}`);
+      const data = await res.json();
+      console.log('[fetchExistingJobs] Response:', data);
 
-    const id = toId(selectedSection);
-    setSections((prev) => {
-      if (prev.some((s) => s.id === id)) {
-        return prev.map((s) => s.id === id ? { ...s, status: 'generating' as const } : s);
+      if (data.jobs && Array.isArray(data.jobs)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const allJobs = data.jobs as any[];
+        console.log('[fetchExistingJobs] Total jobs:', allJobs.length);
+
+        // Get the latest completed job per section (jobs are sorted by started_at DESC)
+        const latestCompleted: Record<string, any> = {};
+        for (const job of allJobs) {
+          if (job.status === 'completed' && job.section_name) {
+            const sectionId = toId(job.section_name);
+            if (!latestCompleted[sectionId]) {
+              latestCompleted[sectionId] = job;
+              console.log(`[fetchExistingJobs] Found completed job for "${job.section_name}" (sectionId: ${sectionId}):`, job.id, 'backend_job_id:', job.backend_job_id);
+            }
+          }
+        }
+
+        // Update sidebar section statuses
+        setSections((prev) =>
+          prev.map((section) => {
+            const job = latestCompleted[section.id];
+            if (job) {
+              console.log(`[fetchExistingJobs] Marking section "${section.name}" (id: ${section.id}) as completed`);
+              return { ...section, status: 'completed' as const, jobId: job.id };
+            }
+            return section;
+          })
+        );
+
+        // Store job data and poll backend for fresh viewer URLs
+        const jobs: Record<string, { dbId: string; backendJobId: string; viewerUrl?: string; downloadUrl?: string }> = {};
+        for (const [sectionId, job] of Object.entries(latestCompleted)) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const j = job as any;
+          jobs[sectionId] = {
+            dbId: j.id,
+            backendJobId: j.backend_job_id,
+            downloadUrl: j.backend_job_id ? pcService.getDownloadUrl(j.backend_job_id) : undefined,
+          };
+          // Poll status to get fresh viewer URL (signed URLs expire after 24h)
+          if (j.backend_job_id) {
+            try {
+              console.log(`[fetchExistingJobs] Polling status for backend_job_id: ${j.backend_job_id}`);
+              const statusRes = await pcService.pollStatus(j.backend_job_id);
+              console.log(`[fetchExistingJobs] Status response:`, statusRes.data);
+              if (statusRes.data.viewer_url) {
+                jobs[sectionId].viewerUrl = statusRes.data.viewer_url;
+              }
+              if (statusRes.data.pptx_path) {
+                jobs[sectionId].downloadUrl = pcService.getDownloadUrl(j.backend_job_id);
+              }
+            } catch (err) {
+              console.warn(`[fetchExistingJobs] Could not fetch fresh viewer URL for ${sectionId}:`, err);
+            }
+          }
+        }
+        console.log('[fetchExistingJobs] Final sectionJobs:', jobs);
+        setSectionJobs(jobs);
       }
-      return [...prev, { id, name: selectedSection, status: 'generating' as const }];
-    });
-    setSections((prev) => {
-      const idx = prev.findIndex((s) => s.id === id);
-      if (idx >= 0) setActiveIdx(idx);
-      return prev;
-    });
+    } catch (err) {
+      console.error('[fetchExistingJobs] Failed to fetch existing generation jobs:', err);
+    } finally {
+      setIsLoadingExistingJobs(false);
+    }
+  }, [companyId]);
 
-    startGeneration(company, subsidiary, selectedSection);
+  // Fetch existing jobs when companyId changes
+  useEffect(() => {
+    if (companyId) {
+      fetchExistingJobs();
+    }
+  }, [companyId, fetchExistingJobs]);
+
+  // ─── Section Click Handler ───────────────────────────────
+  const handleSectionClick = (sectionId: string) => {
+    console.log('[handleSectionClick] sectionId:', sectionId);
+    const idx = sections.findIndex((s) => s.id === sectionId);
+    if (idx < 0) { console.log('[handleSectionClick] section not found'); return; }
+    setActiveIdx(idx);
+    const section = sections[idx];
+    console.log('[handleSectionClick] section:', section.name, 'status:', section.status);
+
+    // If completed or generating, just view it
+    if (section.status === 'completed' || section.status === 'generating') {
+      console.log('[handleSectionClick] Section already', section.status, '— just viewing');
+      return;
+    }
+
+    // Idle section — check if subsidiary is needed
+    const config = AVAILABLE_SECTIONS.find((s) => toId(s.name) === sectionId);
+    console.log('[handleSectionClick] config:', config, 'subsidiary:', JSON.stringify(subsidiary));
+    setSelectedSection(section.name);
+
+    if (config?.needsSubsidiary && !subsidiary.trim()) {
+      console.log('[handleSectionClick] Opening subsidiary modal for:', section.name);
+      setPendingSectionName(section.name);
+      setModalSubsidiary('');
+      setShowSubsidiaryModal(true);
+    } else {
+      console.log('[handleSectionClick] Starting generation directly for:', section.name);
+      startGenerationForSection(section.name, subsidiary);
+    }
   };
 
-  // Update sidebar on completion
+  const startGenerationForSection = (sectionName: string, sub: string = '') => {
+    console.log('[startGenerationForSection] sectionName:', sectionName, 'subsidiary:', sub, 'company:', company);
+    const id = toId(sectionName);
+    setSelectedSection(sectionName);
+    setGeneratingSection(sectionName);
+    setSections((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, status: 'generating' as const } : s))
+    );
+    const idx = sections.findIndex((s) => s.id === id);
+    if (idx >= 0) setActiveIdx(idx);
+    startGeneration(company, sub, sectionName);
+  };
+
+  const handleSubsidiarySubmit = () => {
+    console.log('[handleSubsidiarySubmit] modalSubsidiary:', modalSubsidiary, 'pendingSectionName:', pendingSectionName);
+    if (!modalSubsidiary.trim() || !pendingSectionName) return;
+    setSubsidiary(modalSubsidiary.trim());
+    setShowSubsidiaryModal(false);
+    startGenerationForSection(pendingSectionName, modalSubsidiary.trim());
+    setPendingSectionName('');
+  };
+
+  const handleRegenerate = () => {
+    if (!activeSection) return;
+    console.log('[handleRegenerate] Regenerating section:', activeSection.name);
+    // Reset the section status to idle so the flow (modal → generate) works
+    const sectionId = activeSection.id;
+    setSections((prev) =>
+      prev.map((s) => (s.id === sectionId ? { ...s, status: 'idle' as const } : s))
+    );
+    // Reset the useGenerate hook state
+    resetGeneration();
+    // Now trigger the click flow — this will open modal if subsidiary is needed
+    const config = AVAILABLE_SECTIONS.find((s) => s.name === activeSection.name);
+    setSelectedSection(activeSection.name);
+    if (config?.needsSubsidiary && !subsidiary.trim()) {
+      setPendingSectionName(activeSection.name);
+      setModalSubsidiary('');
+      setShowSubsidiaryModal(true);
+    } else {
+      startGenerationForSection(activeSection.name, subsidiary);
+    }
+  };
+
+  // Update sidebar + sectionJobs on generation completion
   useEffect(() => {
-    if (status === 'completed' && jobId) {
+    if (status === 'completed' && jobId && generatingSection) {
+      const sectionId = toId(generatingSection);
       setSections((prev) =>
         prev.map((s) =>
-          s.name === selectedSection ? { ...s, status: 'completed', jobId } : s
+          s.name === generatingSection ? { ...s, status: 'completed', jobId } : s
         ),
       );
-    } else if (status === 'failed') {
+      // Store fresh viewer/download URLs
+      setSectionJobs((prev) => ({
+        ...prev,
+        [sectionId]: {
+          dbId: prev[sectionId]?.dbId || '',
+          backendJobId: jobId,
+          viewerUrl: backendViewerUrl || undefined,
+          downloadUrl: pcService.getDownloadUrl(jobId),
+        },
+      }));
+    } else if (status === 'failed' && generatingSection) {
       setSections((prev) =>
         prev.map((s) =>
-          s.name === selectedSection ? { ...s, status: 'completed' } : s
+          s.name === generatingSection ? { ...s, status: 'idle' } : s
         ),
       );
     }
-  }, [status, jobId, selectedSection]);
+  }, [status, jobId, generatingSection, backendViewerUrl]);
 
   // ─── Navigation ──────────────────────────────────────────
 
@@ -780,189 +945,237 @@ export default function ReportGenerationPage() {
       {/* ═══════════════ Step 3: Generate Sections ═══════════════ */}
       {currentStep === 3 && (
         <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-          {/* If no sections generated yet, show the config card */}
-          {sections.length === 0 && !isGenerating ? (
-            <div className="space-y-6">
-              <Card className="border-border/50">
-                <CardHeader className="pb-4">
-                  <CardTitle className="text-base font-semibold flex items-center gap-2">
-                    <SparklesIcon className="h-5 w-5 text-primary" />
-                    Generate Section with AI
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Section Selection */}
-                  <div className="space-y-2">
-                    <Label htmlFor="section-select" className="text-sm font-medium">Report Section</Label>
-                    <Select value={selectedSection} onValueChange={setSelectedSection}>
-                      <SelectTrigger id="section-select">
-                        <SelectValue placeholder="Choose a section to generate..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {AVAILABLE_SECTIONS.map((s) => (
-                          <SelectItem key={s.name} value={s.name}>
-                            {s.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* Subsidiary field */}
-                  {showSubsidiary && (
-                    <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
-                      <Label htmlFor="subsidiary-input" className="text-sm font-medium flex items-center gap-2">
-                        <BuildingIcon className="h-4 w-4 text-muted-foreground" />
-                        Subsidiary Name
-                        <span className="text-xs text-destructive font-normal">(required for this section)</span>
-                      </Label>
-                      <Input
-                        id="subsidiary-input"
-                        placeholder="Enter subsidiary or segment name..."
-                        value={subsidiary}
-                        onChange={(e) => setSubsidiary(e.target.value)}
-                      />
-                    </div>
-                  )}
-
-                  {/* Generate button */}
-                  <Button
-                    id="generate-section"
-                    onClick={handleGenerate}
-                    disabled={!canGenerate}
-                    className="w-full h-11 text-base font-medium gap-2"
-                  >
-                    <SparklesIcon className="h-5 w-5" />
-                    Generate {selectedSection || 'Section'}
-                  </Button>
-                </CardContent>
-              </Card>
+          {/* Always show sidebar + content layout */}
+          <div className="flex min-h-[28rem] gap-0 rounded-xl border border-border/50">
+            {/* Left — Section Sidebar */}
+            <div className="w-64 border-r border-border/50 bg-muted/20 flex-shrink-0 flex flex-col">
+              <SectionSidebar
+                sections={sections}
+                activeSection={activeSection?.id || ''}
+                onSectionClick={handleSectionClick}
+              />
             </div>
-          ) : (
-            // Section sidebar + viewer layout
-            <div className="flex h-[calc(100vh-18rem)] gap-0 overflow-hidden rounded-xl border border-border/50">
-              {/* Left — Section Sidebar */}
-              <div className="w-64 border-r border-border/50 bg-muted/20 flex-shrink-0 flex flex-col">
-                <SectionSidebar
-                  sections={sections}
-                  activeSection={activeSection?.id || ''}
-                  onSectionClick={(id) => {
-                    const idx = sections.findIndex((s) => s.id === id);
-                    if (idx >= 0) setActiveIdx(idx);
-                  }}
-                />
-                {/* Generate another section */}
-                <div className="p-3 border-t border-border/50">
-                  <Select value={selectedSection} onValueChange={setSelectedSection}>
-                    <SelectTrigger className="text-xs h-8">
-                      <SelectValue placeholder="Add section..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {AVAILABLE_SECTIONS.map((s) => (
-                        <SelectItem key={s.name} value={s.name}>
-                          {s.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {showSubsidiary && (
-                    <Input
-                      placeholder="Subsidiary name..."
-                      value={subsidiary}
-                      onChange={(e) => setSubsidiary(e.target.value)}
-                      className="mt-2 text-xs h-8"
-                    />
-                  )}
-                  <Button
-                    onClick={handleGenerate}
-                    disabled={!canGenerate}
-                    className="w-full mt-2 h-8 text-xs gap-1"
-                    size="sm"
-                  >
-                    <SparklesIcon className="h-3.5 w-3.5" />
-                    Generate
-                  </Button>
-                </div>
-              </div>
 
-              {/* Right — Content */}
-              <div className="flex-1 flex flex-col overflow-hidden">
-                {/* Section header */}
-                <div className="flex items-center justify-between px-6 py-3 border-b border-border/50 flex-shrink-0">
-                  <div>
-                    <h2 className="text-lg font-semibold">{activeSection?.name || selectedSection}</h2>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {status === 'completed' && '✓ Generated — review below or refine with AI'}
-                      {status === 'failed' && '✗ Generation failed'}
-                      {isGenerating && message}
-                      {status === 'pending' && !isGenerating && 'Ready to generate'}
-                    </p>
-                  </div>
-                  {downloadUrl && (
-                    <Button variant="outline" size="sm" asChild>
-                      <a href={downloadUrl} download className="gap-2">
-                        <DownloadIcon className="h-4 w-4" />
-                        Download PPTX
-                      </a>
-                    </Button>
-                  )}
-                </div>
+            {/* Right — Content */}
+            <div className="flex-1 flex flex-col">
+              {(() => {
+                // Determine what to show based on active section state
+                // Show ProgressTracker if either:
+                //   a) the useGenerate hook reports isGenerating for this section, OR
+                //   b) the section status is 'generating' (covers the gap before the hook resolves)
+                const isCurrentlyGenerating =
+                  (activeSection?.name === generatingSection && isGenerating) ||
+                  (activeSection?.status === 'generating');
+                const justCompleted = activeSection?.name === generatingSection && status === 'completed' && !isGenerating;
+                const justFailed = activeSection?.name === generatingSection && status === 'failed' && !isGenerating;
+                const existingJob = activeSection ? sectionJobs[activeSection.id] : null;
+                const isExistingCompleted = activeSection?.status === 'completed' && !isCurrentlyGenerating;
 
-                {/* Main content area */}
-                <div className="flex-1 p-4 overflow-auto">
-                  {isGenerating || (status !== 'completed' && status !== 'failed') ? (
-                    <div className="max-w-xl mx-auto mt-8">
-                      <ProgressTracker
-                        status={status}
-                        progress={progress}
-                        message={message}
-                        isGenerating={isGenerating}
-                        jobId={jobId}
-                      />
-                    </div>
-                  ) : status === 'completed' && viewerUrl ? (
-                    <PptViewer viewerUrl={viewerUrl} pptxUrl={downloadUrl || undefined} />
-                  ) : status === 'failed' ? (
-                    <div className="flex h-full items-center justify-center">
-                      <div className="text-center space-y-3">
-                        <p className="text-sm text-destructive font-medium">Generation failed</p>
-                        <p className="text-xs text-muted-foreground">{error}</p>
-                        <Button size="sm" onClick={handleGenerate}>
-                          <SparklesIcon className="h-4 w-4 mr-2" />
-                          Retry
-                        </Button>
+                // Determine viewer/download URLs for the active section
+                const activeViewerUrl = justCompleted ? viewerUrl : existingJob?.viewerUrl
+                  ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(existingJob.viewerUrl)}`
+                  : undefined;
+                const activeRawFileUrl = justCompleted ? backendViewerUrl : existingJob?.viewerUrl;
+                const activeDownloadUrl = justCompleted ? downloadUrl : existingJob?.downloadUrl;
+
+                // ── No section selected ──
+                if (!activeSection || activeIdx < 0) {
+                  return (
+                    <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10">
+                        <LayoutGridIcon className="h-10 w-10 text-primary/60" />
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm font-medium">Select a Section</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Click on a section from the sidebar to start generating your report.
+                        </p>
                       </div>
                     </div>
-                  ) : null}
-                </div>
+                  );
+                }
 
-                {/* Edit prompt */}
-                {status === 'completed' && (
-                  <div className="border-t border-border/50 px-6 py-4 flex-shrink-0">
-                    <Card className="border-border/40 bg-muted/10">
-                      <CardContent className="p-4 space-y-3">
+                return (
+                  <>
+                    {/* Section header */}
+                    <div className="flex items-center justify-between px-6 py-3 border-b border-border/50">
+                      <div>
+                        <h2 className="text-lg font-semibold">{activeSection.name}</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {isCurrentlyGenerating && message}
+                          {justCompleted && '✓ Generated — review below or refine with AI'}
+                          {justFailed && '✗ Generation failed'}
+                          {isExistingCompleted && !justCompleted && '✓ Previously generated'}
+                          {activeSection.status === 'idle' && !isCurrentlyGenerating && 'Generation will start shortly...'}
+                        </p>
+                      </div>
+                      {activeDownloadUrl && (isExistingCompleted || justCompleted) && (
                         <div className="flex items-center gap-2">
-                          <SparklesIcon className="h-4 w-4 text-primary" />
-                          <p className="text-sm font-medium">Refine with AI</p>
+                          <Button variant="outline" size="sm" asChild>
+                            <a href={activeDownloadUrl} download className="gap-2">
+                              <DownloadIcon className="h-4 w-4" />
+                              Download PPTX
+                            </a>
+                          </Button>
                         </div>
-                        <Textarea
-                          placeholder='e.g. "Add more financial metrics", "Make it more concise"...'
-                          value={prompt}
-                          onChange={(e) => setPrompt(e.target.value)}
-                          rows={2}
-                          className="resize-none text-sm"
+                      )}
+                    </div>
+
+                    {/* Main content area */}
+                    <div className="flex-1 p-4">
+                      {isCurrentlyGenerating ? (
+                        // Currently generating — show progress
+                        <div className="max-w-xl mx-auto mt-8">
+                          <ProgressTracker
+                            status={status}
+                            progress={progress}
+                            message={message}
+                            isGenerating={isGenerating}
+                            jobId={jobId}
+                          />
+                        </div>
+                      ) : (isExistingCompleted || justCompleted) && activeViewerUrl ? (
+                        // Completed with viewer URL — show PPT viewer
+                        <PptViewer
+                          viewerUrl={activeViewerUrl}
+                          pptxUrl={activeDownloadUrl || undefined}
+                          rawFileUrl={activeRawFileUrl || undefined}
                         />
-                        <Button onClick={handleGenerate} disabled={isGenerating} className="gap-2" size="sm">
-                          <SparklesIcon className="h-4 w-4" />
-                          Refine & Regenerate
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  </div>
-                )}
-              </div>
+                      ) : (isExistingCompleted || justCompleted) && !activeViewerUrl ? (
+                        // Completed but no viewer URL (expired or unavailable)
+                        <div className="flex h-full items-center justify-center">
+                          <div className="flex flex-col items-center gap-4 p-8 max-w-md">
+                            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/10">
+                              <CheckCircle2Icon className="h-8 w-8 text-emerald-500" />
+                            </div>
+                            <div className="text-center space-y-2">
+                              <p className="text-sm font-medium">Report Previously Generated</p>
+                              <p className="text-xs text-muted-foreground">
+                                This section was generated before. The preview link has expired but you can download the file or regenerate it.
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-3 mt-2">
+                              {activeDownloadUrl && (
+                                <Button variant="outline" size="sm" asChild>
+                                  <a href={activeDownloadUrl} download className="gap-2">
+                                    <DownloadIcon className="h-4 w-4" />
+                                    Download PPTX
+                                  </a>
+                                </Button>
+                              )}
+                              <Button size="sm" onClick={handleRegenerate} className="gap-2">
+                                <SparklesIcon className="h-4 w-4" />
+                                Regenerate
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : justFailed ? (
+                        // Generation failed
+                        <div className="flex h-full items-center justify-center">
+                          <div className="text-center space-y-3">
+                            <p className="text-sm text-destructive font-medium">Generation failed</p>
+                            <p className="text-xs text-muted-foreground">{error}</p>
+                            <Button size="sm" onClick={handleRegenerate}>
+                              <SparklesIcon className="h-4 w-4 mr-2" />
+                              Retry
+                            </Button>
+                          </div>
+                        </div>
+                      ) : isLoadingExistingJobs ? (
+                        // Loading existing jobs
+                        <div className="flex h-full items-center justify-center">
+                          <div className="text-center space-y-3">
+                            <Loader2Icon className="h-8 w-8 animate-spin text-primary/40 mx-auto" />
+                            <p className="text-sm text-muted-foreground">Checking for existing reports...</p>
+                          </div>
+                        </div>
+                      ) : (
+                        // Idle section selected — waiting for user action (e.g. subsidiary modal)
+                        <div className="flex h-full items-center justify-center">
+                          <div className="flex flex-col items-center gap-4 p-8">
+                            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+                              <SparklesIcon className="h-8 w-8 text-primary/60" />
+                            </div>
+                            <div className="text-center">
+                              <p className="text-sm font-medium">Ready to Generate</p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {showSubsidiaryModal
+                                  ? 'Please fill in the subsidiary name in the popup to start generation.'
+                                  : 'Generation will begin shortly...'}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Regenerate prompt — for completed sections */}
+                    {(isExistingCompleted || justCompleted) && (
+                      <div className="border-t border-border/50 px-6 py-4">
+                        <Card className="border-border/40 bg-muted/10">
+                          <CardContent className="p-4 space-y-3">
+                            <div className="flex items-center gap-2">
+                              <SparklesIcon className="h-4 w-4 text-primary" />
+                              <p className="text-sm font-medium">Refine with AI</p>
+                            </div>
+                            <Textarea
+                              placeholder='e.g. "Add more financial metrics", "Make it more concise"...'
+                              value={prompt}
+                              onChange={(e) => setPrompt(e.target.value)}
+                              rows={2}
+                              className="resize-none text-sm"
+                            />
+                            <Button onClick={handleRegenerate} disabled={isGenerating} className="gap-2" size="sm">
+                              <SparklesIcon className="h-4 w-4" />
+                              Regenerate
+                            </Button>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
-          )}
+          </div>
+
+          {/* Subsidiary Modal */}
+          <Dialog open={showSubsidiaryModal} onOpenChange={setShowSubsidiaryModal}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <BuildingIcon className="h-5 w-5 text-primary" />
+                  Subsidiary Name Required
+                </DialogTitle>
+                <DialogDescription>
+                  The <span className="font-medium">{pendingSectionName}</span> section requires a subsidiary or segment name to generate.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 py-2">
+                <Label htmlFor="modal-subsidiary" className="text-sm font-medium">
+                  Subsidiary / Segment Name
+                </Label>
+                <Input
+                  id="modal-subsidiary"
+                  placeholder="Enter subsidiary or segment name..."
+                  value={modalSubsidiary}
+                  onChange={(e) => setModalSubsidiary(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSubsidiarySubmit(); }}
+                  autoFocus
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowSubsidiaryModal(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSubsidiarySubmit} disabled={!modalSubsidiary.trim()} className="gap-2">
+                  <SparklesIcon className="h-4 w-4" />
+                  Generate
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       )}
 

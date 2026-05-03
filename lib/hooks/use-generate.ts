@@ -117,6 +117,7 @@ export function useGenerate() {
     subsidiaryName: string = '',
     section: string = 'Company Overview',
   ) => {
+    console.log('[useGenerate.startGeneration] called with:', { companyName, subsidiaryName, section });
     setState({
       jobId: null,
       status: 'pending',
@@ -130,7 +131,9 @@ export function useGenerate() {
 
     try {
       const response = await pcService.generateReport(companyName, subsidiaryName, section);
+      console.log('[useGenerate.startGeneration] generateReport response:', response);
       const jobId = response.data.job_id;
+      console.log('[useGenerate.startGeneration] jobId:', jobId, '— starting polling');
 
       setState((prev) => ({
         ...prev,
@@ -143,6 +146,7 @@ export function useGenerate() {
       // Start polling for status updates
       startPolling(jobId);
     } catch (err) {
+      console.error('[useGenerate.startGeneration] ERROR:', err);
       setState((prev) => ({
         ...prev,
         isGenerating: false,

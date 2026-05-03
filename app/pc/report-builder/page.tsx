@@ -68,6 +68,7 @@ export default function ReportBuilderPage() {
     message,
     isGenerating,
     downloadUrl,
+    viewerUrl: backendViewerUrl,
     error,
     startGeneration,
     reset,
@@ -81,10 +82,16 @@ export default function ReportBuilderPage() {
   const canGenerate = company.trim() && selectedSection && !isGenerating
     && (!showSubsidiary || subsidiary.trim());
 
-  // Build viewer URL from download URL
-  const viewerUrl = downloadUrl
-    ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(downloadUrl)}`
-    : undefined;
+  // Build the viewer URL for the Office Online iframe.
+  // The backend returns a raw GCS signed URL (publicly accessible).
+  // Wrap it with Office Online embed if it's not already wrapped.
+  const viewerUrl = (() => {
+    if (backendViewerUrl) {
+      if (backendViewerUrl.includes('view.officeapps.live.com')) return backendViewerUrl;
+      return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(backendViewerUrl)}`;
+    }
+    return undefined;
+  })();
 
   const activeSection = sections[activeIdx] || null;
 
@@ -314,7 +321,7 @@ export default function ReportBuilderPage() {
               </div>
             ) : status === 'completed' && viewerUrl ? (
               // PPT Viewer after generation
-              <PptViewer viewerUrl={viewerUrl} pptxUrl={downloadUrl || undefined} />
+              <PptViewer viewerUrl={viewerUrl} pptxUrl={downloadUrl || undefined} rawFileUrl={backendViewerUrl || undefined} />
             ) : status === 'failed' ? (
               <div className="flex h-full items-center justify-center">
                 <div className="text-center space-y-3">

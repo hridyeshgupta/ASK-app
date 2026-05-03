@@ -1,18 +1,18 @@
 'use client';
 
 // components/report/section-sidebar.tsx
-// Left sidebar showing sections from backend manifest.
-// No manual adding — only shows what the backend provides.
-// Sections can be in: completed (from manifest), generating (live), or finalized (user-approved).
+// Left sidebar showing all available report sections.
+// Sections can be: idle (not generated), generating, completed, or finalized.
 
 import { cn } from '@/lib/utils';
 import {
   CheckCircle2Icon,
   Loader2Icon,
   CircleDotIcon,
+  CircleIcon,
 } from 'lucide-react';
 
-export type SectionStatus = 'generating' | 'completed' | 'finalized';
+export type SectionStatus = 'idle' | 'generating' | 'completed' | 'finalized';
 
 export interface SectionItem {
   id: string;
@@ -29,6 +29,7 @@ interface SectionSidebarProps {
 }
 
 const statusConfig: Record<SectionStatus, { icon: React.ElementType; color: string; label: string }> = {
+  idle: { icon: CircleIcon, color: 'text-muted-foreground', label: 'Not generated' },
   generating: { icon: Loader2Icon, color: 'text-amber-500', label: 'Generating...' },
   completed: { icon: CircleDotIcon, color: 'text-blue-500', label: 'Ready' },
   finalized: { icon: CheckCircle2Icon, color: 'text-emerald-500', label: 'Finalized' },
@@ -52,7 +53,7 @@ export function SectionSidebar({ sections, activeSection, onSectionClick }: Sect
       <div className="flex-1 overflow-y-auto py-2">
         {sections.length === 0 && (
           <p className="px-4 py-6 text-xs text-muted-foreground text-center">
-            No sections yet. Enter a section name and click Generate to start.
+            No sections available.
           </p>
         )}
         {sections.map((section) => {
@@ -82,6 +83,9 @@ export function SectionSidebar({ sections, activeSection, onSectionClick }: Sect
                 <span className="truncate block">{section.name}</span>
                 {section.status === 'generating' && (
                   <span className="text-xs text-amber-500">Generating...</span>
+                )}
+                {section.status === 'idle' && (
+                  <span className="text-xs text-muted-foreground">Click to generate</span>
                 )}
               </div>
             </button>
